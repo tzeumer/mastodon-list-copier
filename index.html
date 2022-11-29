@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="UTF-8">
+<title>Mastodon List Copier</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+#wrapper 
+    { max-width: 750px; margin: auto auto; background-color: aliceblue; padding: 20px; }
+.grid-container 
+    { display: grid; grid-template-columns: auto auto auto; justify-content: start; grid-column-gap: 10px;}
+.flex-container    
+    { display: flex; width: 100%;}
+.flex-container > * { flex: 1; }    
+legend
+    {font-weight: bolder; }
+input
+    {width: 120px;}
+.token 
+    {width: 60px;}
+textarea
+    {width: 90%; height: 300px; }
+#start 
+    { margin: auto auto; }
+.msg_fail       {color: red; }
+.msg_neutral    {color: black; }
+.msg_partial    {color: orange; }
+.msg_success    {color: green; }   
+</style>
+<script>
+    window.addEventListener("load", function () {
+        /** ********************************************
+         *  NOTES & TODOS
+         ******************************************** */
+         // Check README.md in same folder
+         
+
+        /** ********************************************
+         *  Global variables
+         ******************************************** */
+        // Api vars (source)
+        var source_instance = '';
+        var source_token    = '';
+        var source_api      = "https://"+source_instance+'/api/v1/';
+
+        // Api vars (target)
+        var target_instance = '';
+        var target_token    = '';
+        var target_api      = "https://"+target_instance+'/api/v1/';
+        
+        // Options
+        var list_prefix  = '';
+        var list_postfix = '';
+
+
+        /** ********************************************
+         * Event listeners
+         ******************************************** */
+        // EVENTS: CLICK
+        document.addEventListener('click', function (event) {
+            update_variables();
+            
+            if (event.target.matches('#start')) 
+                { copy_lists(); }
+            if (event.target.matches('#del_target_lists')) 
+                { delete_all_lists(); }
+        });
+        
+        // EVENTS: CHANGE
+        document.addEventListener('change', function (event) {
+            if (event.target.matches('#source_instance, #target_instance')) 
+                { update_variables(); }
+        })
+        
+        // EVENTS: KEYUP
+        document.addEventListener('keyup', function (event1) {
+            if (event1.target.matches('#source_instance, #target_instance')) 
+                { update_variables(); }
+        })
+
+
+        /** ********************************************
+         * Actions / functions
+         ******************************************** */
+
+        /**
+         * Add hint to form on how to get token & update global variables
+         */
+        function update_variables() {
+            source_instance = document.getElementById('source_instance').value.replace('https://', '');
+            target_instance = document.getElementById('target_instance').value.replace('https://', '');
+
+            target_token = document.getElementById('target_token').value;
+            source_token = document.getElementById('source_token').value;
+            
+            source_api = "https://"+source_instance+'/api/v1/';
+            target_api = "https://"+target_instance+'/api/v1/';
+
+            list_prefix  = document.getElementById('name_prefix').value;
+            list_postfix = document.getElementById('name_postfix').value;
+            
+            document.getElementById('source_link').innerHTML = '<a href="https://'+source_instance+'/settings/applications/new" target="_blank">Generate token on '+source_instance+'</a> (read only)';
+
+            document.getElementById('target_link').innerHTML = '<a href="https://'+target_instance+'/settings/applications/new" target="_blank">Generate token on '+target_instance+'</a> (read & write)';
+        }
+
+
+        /**
+         * Delete all lists on target instance
+         * (This is really more for testing this script conveniently)
+         */
+        async function delete_all_lists() {
+            if( confirm("This deletes ALL existing lists on the target instance. Still sure?") == false ){
+                return false;
+            }
+            
+            let fetchTargetData = {method: 'GET',
+                                headers: new Headers({
+                                    'Content-Type': 'application/json; charset=UTF-8', 'Authorization': 'Bearer '+target_token
+                                })}
+            // Step 1: Get lists
+            const del_lists = await fetch(target_api+'lists?since_id=1', fetchTargetData).then(response => response.json());
+            this.del_lists = del_lists;
+            document.getElementById('status').innerHTML += "<strong>Step 1</strong>: Fetched all lists<br>";
+            
+            // Step 2: Delete lists
+            const deleted = await Promise.all(del_lists.map(async delList => {
+                const result = await fetch(target_api + 'lists/'+delList.id, {
+                    method: 'DELETE', // *GET, POST, PUT, DELETE, etc.
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer '+target_token
+                    }});
+                document.getElementById('target_api_remaining').innerHTML = result.headers.get('x-ratelimit-remaining');
+                return result.json();
+            }));  
+            document.getElementById('status').innerHTML += "<strong>Step 2</strong>: Deleted all lists (please check on website too for now - might need a reload)<br>";
+            //console.log(deleted);
+        }     
+
+        
+        /**
+         * Copy stuff
+         */
+        async function copy_lists() {
+            // Api limits 
+            var source_api_limit = 0;
+            var target_api_limit = 0;
+            
+            /* *********************************
+             * PART 1: SOURCE INSTANCE
+            ********************************* */
+            // Fetch get options for source instance
+            let fetchSourceData = {method: 'GET',
+                                headers: new Headers({
+                                    'Content-Type': 'application/json; charset=UTF-8', 'Authorization': 'Bearer '+source_token
+                                })}
+
+            // STEP 1: Get lists from source instance
+            const source_lists = await fetch(source_api+'lists?since_id=1', fetchSourceData).then(response => response.json());
+            this.source_lists = source_lists;
+            //console.log(source_lists);
+            document.getElementById('status').innerHTML += "<strong>Step 1</strong>: Fetched your lists from "+source_instance+"<br>";
+            
+            // STEP 2: Get all source members of each list
+            //         (Don't forget: we get exact same number of array entries as for lists above)
+            // @note / @todo: might have to do it slowly if VERY many lists exists (should best be calculated against api limit and items in array)
+            const source_list_members = await Promise.all(source_lists.map(async list => {
+                const result = await fetch(source_api + 'lists/'+ list.id + '/accounts', fetchSourceData);
+                source_api_limit = result.headers.get('x-ratelimit-remaining');
+                return result.json();
+            }));
+            //console.log("source_list_members " + source_list_members);
+            document.getElementById('status').innerHTML += "<strong>Step 2</strong>: Fetched members of each list from "+source_instance+"<br>";
+
+
+            /* *********************************
+             * PART 2: INTERMEZZO
+            ********************************* */
+            // STEP 3: Get unique members from lists to only query each person once 
+            //         (might be done better in less steps)
+            let unique_list_members = {};
+            source_list_members.forEach(function(members) {
+                members.forEach(function(member) {
+                    // note "member.acct" is without server name, when from same (=source) instance
+                    // add it if missing; might be useful
+                    let acct_full = member.acct;
+                    if (acct_full.indexOf('@') == -1 ) {
+                        acct_full += "@"+source_instance;
+                    }
+
+                    // Only remember relevant data
+                    // use source member id as index
+                    // @todo: toString() or something better? Bad id as index?
+                    unique_list_members[member.id] = ({
+                        "acct": acct_full,
+                        "url": member.url,
+                        "display_name": member.display_name,
+                        "sourceID": member.id
+                    }) 
+                });                    
+            });               
+            //console.log("unique_list_members ("+ Object.keys(unique_list_members).length +')');
+            //console.log(unique_list_members);
+            document.getElementById('status').innerHTML += "<strong>Step 3</strong>: Put unique list members in variable to make a concordance of the member ids later on<br>";
+
+
+            /* *********************************
+             * PART 3: TARGET INSTANCE
+            ********************************* */
+            // Fetch options for source instance
+            let fetchTargetData = {method: 'GET',
+                                headers: new Headers({
+                                    'Content-Type': 'application/json; charset=UTF-8', 'Authorization': 'Bearer '+target_token
+                                })}
+                                
+            // STEP 4: Get ID of own account
+            const target_account = await fetch(target_api+'accounts/verify_credentials', fetchTargetData).then(response => response.json());
+            document.getElementById('status').innerHTML += "<strong>Step 4</strong>: Fetched your members id for "+target_instance+"<br>";
+            
+            // STEP 5: Get followed accounts (and list)
+            // @todo use while next link exists instead of paging
+            let paging = Math.ceil(target_account.following_count / 40);
+            
+            let all_followed = [];
+            let query = target_api+'accounts/'+target_account.id+'/following?limit=40';
+            for (call = 0; call < paging ; call++) {
+                await fetch(query, fetchTargetData)
+                    .then(response => {                            
+                        // https://docs.joinmastodon.org/api/guidelines/#pagination
+                        let mastodonNextLink = /\https:\/\/.*max_id=.*?\d*/g;
+                        query = mastodonNextLink.exec(response.headers.get('Link'));
+                        
+                        document.getElementById('target_api_remaining').innerHTML = response.headers.get('x-ratelimit-remaining');
+                        return response.json()
+                    })
+                    .then((account_list) => {
+                        //all_followed.push(account_list);
+                        all_followed = [...all_followed,...account_list];
+                    });
+            } 
+            //console.log(all_followed);
+            document.getElementById('status').innerHTML += "<strong>Step 5</strong>: Fetched all people you follow with your acccount on "+target_instance+"<br>";
+
+            // STEP 6: Create concordance of followed account ids
+            // @todo: only loop until everything of either list is already matched in the other list; use instead of "match" below
+            // @todo: the object looping is hard to read; only did it for now, because the old member IDs as key seem convenient; refactor
+            // @note: We could follow not followed accounts in theory, but remember
+            //        a) costs lots of api calls (currently everything should work without caring much for limits, event for large accounts)
+            //        b) it sometime takes a while until accounts are "really" followed and can be added to a list (otherwise it fail and that is hard to re-schedule)
+            let not_yet_followed = [];
+            
+            let total_lists_following = Object.keys(unique_list_members).length;
+
+            // loop people already on a list
+            document.getElementById('not_followed_urls').innerHTML  = '';
+            document.getElementById('matched_followed').innerHTML   = '';
+            for (const [key, list_member_concordance] of Object.entries(unique_list_members)) {
+            console.log(`${key}: ${list_member_concordance}`);
+                // loop through followers on target instance to get new id
+                let match = 0;
+                all_followed.forEach(function(single_followed) {
+                    if (single_followed.url == list_member_concordance.url) {
+                        list_member_concordance["targetID"] = single_followed.id;
+                        //console.log(list_member_concordance);
+                        document.getElementById('matched_followed').innerHTML += list_member_concordance.url+"\n";
+                        match = 1;
+                    }
+                });
+                if (match = 1) document.getElementById('not_followed_urls').innerHTML += list_member_concordance.url+"\n";
+              };
+            // console.log(unique_list_members);
+            document.getElementById('status').innerHTML += "<strong>Step 6</strong>: Created concordance of followed ids (see step 3)<br>";
+
+
+            // STEP 7: Create all lists and add all members
+            function postTarget(data) {
+                let postTargetData = {method: 'POST',
+                                      body: JSON.stringify(data),
+                                      headers: new Headers({
+                                         'Content-Type': 'application/json; charset=UTF-8', 'Authorization': 'Bearer '+target_token
+                                     })}
+                 return postTargetData;
+            }
+            
+
+            document.getElementById('status').innerHTML += "<strong>Step 7</strong>: Creating list<br>";
+
+            document.getElementById('status').innerHTML += '<p>Legend:<ul><li><span class="msg_fail">failed</span>: No member added because none is followed on target</li><li><span class="msg_neutral">ok</span>: Source list was empty. No members to add.</li><li><span class="msg_partial">partial success</span>: Some members are followed on the target an were added to the list\</li><li><span class="msg_success">succeeded</span>: Every source member was added to the target list</li></ul>';
+            
+            document.getElementById('status').innerHTML += "<ul>";
+            source_lists.forEach(function(list, array_index) {
+                // START Create list on new instanze
+                let list_data = {title: list_prefix + list.title + list_postfix, replies_policy: list.replies_policy};
+                
+                fetch("https://"+target_instance+'/api/v1/lists', postTarget(list_data))
+                // Check response
+                .then(list_create_response => {
+                    if (list_create_response.status >= 300) { throw new Error("Bad Server Response"); }
+                    
+                    document.getElementById('target_api_remaining').innerHTML = list_create_response.headers.get('x-ratelimit-remaining');
+                    return list_create_response.json();
+                })
+                .then((list_status) => {
+                    //console.log("list_status " + list_status);
+
+                    // Now loop the members of this list (see step 2) and 
+                    // use the concordance from unique_list_members (see step 6)
+                    // to build the data for adding the list members
+                    // @todo members_found / members_missing is stupid - array tells it all...
+                    let target_list_member_ids = [];
+                    let total_members = Object.keys(source_list_members[array_index]).length;
+                    source_list_members[array_index].forEach( function (source_member) {
+                        // Is the member followed in the target instance, so that we got a concordance?
+                        if (unique_list_members[source_member.id].targetID !== undefined) {
+                            target_list_member_ids.push(unique_list_members[source_member.id].targetID);
+                        }
+                    });
+
+                    // Only try adding to list if members were found
+                    if (total_members == 0) {
+                        document.getElementById('status').innerHTML += '<li>'+list_status.title+' <span class="msg_neutral">ok</span>';
+                    }
+                    else if (target_list_member_ids.length == 0) {
+                        document.getElementById('status').innerHTML += '<li>'+list_status.title+' <span class="msg_fail">failed</span> (0 of '+total_members+')';
+                    } else {
+                        if (total_members == target_list_member_ids.length) {
+                            document.getElementById('status').innerHTML += '<li>'+list_status.title+' <span class="msg_success">succeeded</span> (' +total_members+ ')';
+                        } else {
+                            document.getElementById('status').innerHTML += '<li>'+list_status.title+' <span class="msg_partial">partial success</span> (' + target_list_member_ids.length + ' of '+total_members +')';
+                        }
+                        
+                        // Actually add the accounts to list ()
+                        let members_data = {account_ids: [target_list_member_ids.join(", ")]};
+                        
+                        fetch("https://"+target_instance+'/api/v1/lists/'+list_status.id+'/accounts', postTarget(members_data))
+                        // Check response
+                        .then(ladd_members_response => {
+                            if (ladd_members_response.status >= 300) { throw new Error("Bad Server Response"); }
+                            
+                            document.getElementById('target_api_remaining').innerHTML = ladd_members_response.headers.get('x-ratelimit-remaining');
+                            //return ladd_members_response.json();
+                        })
+                        
+                    }
+                    //console.log(target_list_member_ids);
+                    
+                });
+            })
+            document.getElementById('status').innerHTML += "</ul>";
+
+        }
+        
+    });
+</script>
+<body>
+<div id="wrapper">
+    <h1>Mastodon List Copier</h1>
+    <p>Quick & dirty spaghetti code (<a href="https://github.com/tzeumer/mastodon-list-copier">see Github</a>)and some terrible English (ask my teachers ;)). This tool copies lists from one to another Mastodon account. Requires that you already follow the people on the lists to be copied with your new account. This script does not add new (the missing) followings, although it lists them after a run. Nothing is shared, it requires only this HTML source. You can download, modify and put it anywhere. Comes with no guarantees by <a href="https://openbiblio.social/@vform">@vform@openbiblio.social</a>.</p>
+    <p>Provide data for source and target instance.</p>        
+    
+    <form id="transferLists" onsubmit="return(false);">
+        <fieldset>
+            <legend>Source instance (required)</legend>
+            <div class="grid-container">
+                <div><label for="source_instance">URL:</label> <input type="text" name="source_instance" id="source_instance" value="openbiblio.social"></div> 
+                <div><label for="source_token">Token:</label> <input type="text" name="source_token" id="source_token" class="inp_small"> <br><span id="source_link">&nbsp;</span></div>
+                <div>&nbsp;</div>
+            </div>
+        </fieldset>        
+        <fieldset>
+            <legend>Target instance (required)</legend>
+            <div class="grid-container">
+                <div><label for="target_instance">URL:</label> <input type="text" name="target_instance" id="target_instance" value="nerdculture.de"></div>
+                <div><label for="target_token">Token:</label> <input type="text" name="target_token" id="target_token" class="inp_small"> <br><span id="target_link">&nbsp;</span></div>
+                <div><button id="del_target_lists">Delete all existing lists</button></div> 
+            </div>
+        </fieldset>        
+        <fieldset>
+            <legend>Modify list names (optional)</legend>
+            <div class="grid-container">
+                <div><label for="name_prefix">Add prefix:</label> <input type="text" name="name_prefix" id="name_prefix" class="inp_small" value=""></div>
+                <div><label for="name_postfix">Add postfix:</label> <input type="text" name="name_postfix" id="name_postfix" class="inp_small" value=""></div>
+            </div>
+        </fieldset>        
+        <fieldset>
+            <legend>Go</legend>
+            <button id="start">Start copying lists and members</button>
+        </fieldset>                
+    </form>
+    <div>
+        <p>Target api calls left: <span id="target_api_remaining"></span></p>
+        <h2>Status messages</h2>
+        <div id="status"></div>
+        <div class="flex-container">
+            <div>
+                <h3>Missing followings</h3>
+                <p>Not followed on target.</p>
+                <textarea id="not_followed_urls">None</textarea>
+            </div>
+            <div>
+                <h3>Found followings</h3>
+                <p>Yay, followed on target!</p>
+                <textarea id="matched_followed">None</textarea>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
